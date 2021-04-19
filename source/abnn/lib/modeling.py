@@ -405,7 +405,7 @@ def run_res(iter_index,
 
 def post_res(iter_index,
              json_file,
-             sits=False):
+             data_name="data"):
     fp = open(json_file, 'r')
     jdata = json.load(fp)
     res_cmpf_error = jdata["res_cmpf_error"]
@@ -416,7 +416,7 @@ def post_res(iter_index,
 
     all_task = glob.glob(res_path + "/[0-9]*[0-9]")
     if len(all_task) == 0:
-        np.savetxt(res_path + 'data.raw', [], fmt="%.6e")
+        np.savetxt(res_path + data_name + '.raw', [], fmt="%.6e")
         return
     all_task.sort()
     if res_cmpf_error:
@@ -447,7 +447,7 @@ def post_res(iter_index,
     centers = np.reshape(centers, [-1, ndim])
     force = np.reshape(force, [-1, ndim])
     data = np.concatenate((centers, force), axis=1)
-    np.savetxt(res_path + 'data.raw', data, fmt="%.6e")
+    np.savetxt(res_path + data_name + '.raw', data, fmt="%.6e")
 
     norm_force = np.linalg.norm(force, axis=1)
     log_task("min|f| = %e  max|f| = %e  avg|f| = %e" %
@@ -457,9 +457,15 @@ def post_res(iter_index,
 def make_train_eff(sits_iter_index, json_file):
     fp = open(json_file, 'r')
     jdata = json.load(fp)
+    template_dir = jdata["template_dir"]
+    numb_model = jdata["numb_model"]
+    res_iter = jdata["res_iter"]
     res_cmpf_error = jdata["res_cmpf_error"]
 
     sits_iter_name = join("sits", make_iter_name(sits_iter_index))
+
+    data_dir = "data"
+    data_name = "data%03d" % (sits_iter_index + 1)
 
     for j in range(sits_iter_index):
         sits_iterj_name = join("sits", make_iter_name(j))
@@ -472,7 +478,7 @@ def make_train_eff(sits_iter_index, json_file):
 
             all_task = glob.glob(res_path + "/[0-9]*[0-9]")
             if len(all_task) == 0:
-                np.savetxt(res_path + 'data.raw', [], fmt="%.6e")
+                np.savetxt(res_path + data_name + '.raw', [], fmt="%.6e")
                 return
             all_task.sort()
             cmpf_cmd = "./cmpf_wtij.py -i %s -j %s" % (sits_iter_name, sits_iterj_name)
@@ -493,19 +499,92 @@ def make_train_eff(sits_iter_index, json_file):
                 this_force = np.loadtxt('force.out')
                 force = np.append(force, this_force)
                 ndim = this_force.size
-                assert (
-                        ndim == this_centers.size), "center size is diff to force size in " + work_path
+                assert(ndim == this_centers.size), "center size is diff to force size in " + work_path
                 os.chdir(base_path)
 
             centers = np.reshape(centers, [-1, ndim])
             force = np.reshape(force, [-1, ndim])
             data = np.concatenate((centers, force), axis=1)
-            np.savetxt(res_path + 'data.raw', data, fmt="%.6e")
+            np.savetxt(res_path + 'data%03d.raw' % (sits_iter_index+1), data, fmt="%.6e")
 
             norm_force = np.linalg.norm(force, axis=1)
             log_task("min|f| = %e  max|f| = %e  avg|f| = %e" %
                      (np.min(norm_force), np.max(norm_force), np.average(norm_force)))
 
+    iter_end = int(sits_rid_iter[1]) if sits_iter_index > 0 else 0
+    for iter_index in range(iter_end):
+        iter_name = make_iter_name(iter_index)
+        train_path = join(iter_name, train_name)
+        data_path = join(train_path, data_dir)
+
+        data_file = join(data_path, data_name + ".raw")
+        data_old_file = join(data_path, data_name + ".old.raw")
+        data_new_file = join(data_path, data_name + ".new.raw")
+        base_path = os.getcwd() + "/"
+        templ_train_path = join(template_dir, train_name)
+
+        create_path(train_path)
+        os.makedirs(data_path)
+        copy_file_list(train_files, templ_train_path, train_path)
+
+        # collect data
+        log_task("collect data upto %d" % (iter_index))
+        if iter_index == 0:
+            ii = 0
+            this_raw = join(base_path, make_iter_name(ii), res_name, data_name + ".raw")
+            os.chdir(data_path)
+            os.symlink(os.path.relpath(this_raw), os.path.basename(data_new_file))
+            os.symlink(os.path.basename(data_new_file), os.path.basename(data_file))
+            os.chdir(base_path)
+            open(data_old_file, "w").close()
+        else:
+            prev_iter_index = iter_index - 1
+            prev_data_file = join(base_path, make_iter_name(prev_iter_index), train_name, data_dir, data_name + ".raw")
+            this_raw = join(base_path, make_iter_name(iter_index), res_name, data_name + ".raw")
+            os.chdir(data_path)
+            os.symlink(os.path.relpath(prev_data_file),
+                       os.path.basename(data_old_file))
+            os.symlink(os.path.relpath(this_raw), os.path.basename(data_new_file))
+            os.chdir(base_path)
+            with open(data_file, "wb") as fo:
+                with open(data_old_file, "rb") as f0, open(data_new_file, "rb") as f1:
+                    shutil.copyfileobj(f0, fo)
+                    shutil.copyfileobj(f1, fo)
+
+    if sits_iter_index > 0:
+        train_path = join(sits_iter_name, train_name)
+        data_path = join(train_path, data_dir)
+
+        data_file_sits = join(data_path, data_name + ".raw")
+        # create train dirs
+        log_task("create train dirs")
+        create_path(train_path)
+        create_path(data_path)
+        shutil.copy(data_file, data_file_sits)
+    for ii in range(numb_model):
+        work_path = join(train_path, ("%03d" % ii))
+        old_model_path = join(work_path, "old_model")
+
+        create_path(work_path)
+        os.chdir(work_path)
+        os.symlink(join("..", data_dir), data_dir)
+        os.chdir(base_path)
+        if sits_iter_index >= 1:
+            prev_iter_index = iter_end - 1
+            prev_iter_name = make_iter_name(prev_iter_index)
+            prev_train_path = prev_iter_name + "/" + train_name + "/"
+            prev_train_path = os.path.abspath(prev_train_path) + "/"
+            prev_work_path = prev_train_path + ("%03d/" % ii)
+            prev_model_files = glob.glob(join(prev_work_path, "model.ckpt.*")) + [join(prev_work_path, "checkpoint")]
+            # prev_model_files += [join(prev_work_path, "checkpoint")]
+            create_path(old_model_path)
+            os.chdir(old_model_path)
+            for mfile in prev_model_files:
+                os.symlink(os.path.relpath(mfile), os.path.basename(mfile))
+                # shutil.copy (ii, old_model_path)
+            os.chdir(base_path)
+            for mfile in prev_model_files:
+                shutil.copy(mfile, work_path)
 
 def clean_res(iter_index):
     iter_name = make_iter_name(iter_index)
@@ -581,7 +660,7 @@ def make_train(iter_index,
 
         create_path(work_path)
         os.chdir(work_path)
-        os.symlink("../data", "./data")
+        os.symlink(join("..", data_dir), data_dir)
         os.chdir(base_path)
         if iter_index >= 1:
             prev_iter_index = iter_index - 1
@@ -605,20 +684,26 @@ def run_train(iter_index,
               json_file,
               exec_machine=MachineLocal,
               data_dir="data",
-              data_name="data"):
+              data_name="data",
+              sits_iter=False):
     fp = open(json_file, 'r')
     jdata = json.load(fp)
+    sits_param = jdata.get("sits_settings", None)
+
     numb_model = jdata["numb_model"]
     train_thread = jdata["train_thread"]
     res_iter = jdata["res_iter"]
 
     iter_name = make_iter_name(iter_index)
+    if sits_param is not None:
+        if sits_iter:
+            iter_name = join("sits", make_iter_name(iter_index))
     train_path = join(iter_name, train_name)
     base_path = os.getcwd() + "/"
 
     # check if new data is empty
     new_data_file = os.path.join(train_path, data_dir, data_name + '.new.raw')
-    if os.stat(new_data_file).st_size == 0:
+    if (os.stat(new_data_file).st_size == 0) & (not sits_iter):
         prev_iter_index = iter_index - 1
         prev_train_path = join(base_path, make_iter_name(prev_iter_index), train_name) + "/"
         prev_models = glob.glob( join(prev_train_path, "*.pb") )

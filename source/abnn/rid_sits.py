@@ -336,12 +336,61 @@ def post_sits_iter(sits_iter_index, json_file):
     CONSTANT_kB = 0.008314472
     beta_k = 1.0 / (CONSTANT_kB * tempf)
     beta_0 = 1.0 / (CONSTANT_kB * sits_param["sits-t-ref"])
-    np.savetxt(beta_k, join(sits_dir, "beta_k.dat"))
-    np.savetxt(np.array([beta_0]), join("sits", "beta_0.dat"))
+    if not os.path.exists(join(sits_dir, "beta_k.dat")):
+        np.savetxt(join(sits_dir, "beta_k.dat"), beta_k)
+    if not os.path.exists(join("sits", "beta_0.dat")):
+        np.savetxt(join("sits", "beta_0.dat"), np.array([beta_0]))
 
 
 def run_train_eff(sits_iter_index, json_file):
-    pass
+    run_train(sits_iter_index, json_file, data_name="data%03d" % sits_iter_index, sits_iter=True)
+
+def post_train_eff(sits_iter_index, json_file):
+    # copy trained model in sits_train_path to last rid iter (prev_*)
+    fp = open(json_file, 'r')
+    jdata = json.load(fp)
+    template_dir = jdata["template_dir"]
+    numb_model = jdata["numb_model"]
+    base_path = os.getcwd() + "/"
+    if sits_iter_index > 0:
+        sits_iterj_name = join("sits", make_iter_name(sits_iter_index - 1))
+        sits_rid_iter = np.array([np.loadtxt(join(sits_iterj_name, "rid_iter_begin.dat")),
+                                  np.loadtxt(join(sits_iterj_name, "rid_iter_end.dat"))]).astype(int)
+        iter_end = int(sits_rid_iter[1])
+        prev_iter_index = iter_end - 1
+        prev_iter_name = make_iter_name(prev_iter_index)
+        prev_train_path = prev_iter_name + "/" + train_name + "/"
+        prev_train_path = os.path.abspath(prev_train_path) + "/"
+
+        sits_iter_name = join("sits", make_iter_name(sits_iter_index))
+
+        data_dir = "data"
+        data_name = "data%03d" % sits_iter_index
+        train_path = join(sits_iter_name, train_name)
+
+        for ii in range(numb_model):
+            work_path = join(train_path, ("%03d" % ii))
+            model_files = glob.glob(join(work_path, "model.ckpt.*")) + [join(work_path, "checkpoint")]
+
+            prev_work_path = prev_train_path + ("%03d/" % ii)
+            prev_model_files = glob.glob(join(prev_work_path, "model.ckpt.*")) + [join(prev_work_path, "checkpoint")]
+            # prev_model_files += [join(prev_work_path, "checkpoint")]
+            old_model_path = join(prev_work_path, "old_model")
+            create_path(old_model_path)
+            os.chdir(old_model_path)
+            for mfile in model_files:
+                os.symlink(os.path.relpath(mfile), os.path.basename(mfile))
+                # shutil.copy (ii, old_model_path)
+            os.chdir(base_path)
+            for mfile in model_files:
+                shutil.copy(mfile, prev_work_path)
+
+            prev_models = glob.glob(join(prev_train_path, "*.pb"))
+            models = glob.glob(join(train_path, "*.pb"))
+            for mfile in models:
+                model_name = os.path.basename(mfile)
+                os.symlink(mfile, join(prev_train_path, model_name))
+
 
 def run_iter(json_file, init_model):
     prev_model = init_model
@@ -364,11 +413,12 @@ def run_iter(json_file, init_model):
 
     global exec_machine
 
+    data_name = "data"
     for ii in range(numb_iter):
         if ii > 0:
             prev_model = glob.glob(make_iter_name(ii-1) + "/" + train_name + "/*pb")
         if ii % niter_per_sits == 0:
-            kk = ii / niter_per_sits
+            kk = int(ii / niter_per_sits)
             log_iter("run_sits_iter", kk, 0)
             if kk > 0:
                 open(join("sits", make_iter_name(kk-1), "rid_iter_end.dat"), "w+").write("%d" % ii)
@@ -380,6 +430,9 @@ def run_iter(json_file, init_model):
             if kk > 0:
                 make_train_eff(kk, json_file)
                 run_train_eff(kk, json_file, exec_machine)
+                post_train_eff(kk, json_file)
+
+            data_name = "data%03d" % (kk+1)
         
         for jj in range(numb_task):
             if ii * max_tasks + jj <= iter_rec[0] * max_tasks + iter_rec[1]:
@@ -405,13 +458,13 @@ def run_iter(json_file, init_model):
                 run_res(ii, json_file, exec_machine)
             elif jj == 5:
                 log_iter("post_res", ii, jj)
-                post_res(ii, json_file)
+                post_res(ii, json_file, data_name=data_name)
             elif jj == 6:
                 log_iter("make_train", ii, jj)
-                make_train(ii, json_file)
+                make_train(ii, json_file, data_name=data_name)
             elif jj == 7:
                 log_iter("run_train", ii, jj)
-                run_train(ii, json_file, exec_machine)
+                run_train(ii, json_file, exec_machine, data_name=data_name)
                 if cleanup:
                     clean_train(ii)
                     clean_enhc(ii)
