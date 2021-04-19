@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import os
+from os.path import join
 import re
 import shutil
 import json
@@ -36,10 +37,10 @@ enhc_out_conf = "confs/"
 enhc_out_angle = "angle.rad.out"
 
 mol_name = "mol"
-mol_files = ["grompp.mdp", "topol.top"]
+mol_files = ["grompp.mdp", "grompp_sits.mdp", "grompp_sits_iter.mdp", "grompp_restraint.mdp", "topol.top"]
 
 res_name = "01.resMD"
-res_files = ["cmpf.sh", "cmpf.py",
+res_files = ["cmpf.sh", "cmpf.py", "cmpf_wt.py",
              "general_mkres.sh", "plumed.res.templ", "tools"]
 res_plm = "plumed.res.dat"
 
@@ -113,6 +114,28 @@ def make_grompp_res(gro_file, nsteps, frame_freq):
     replace(gro_file, "nstenergy.*=.*", "nstenergy = %d" % 0)
 
 
+def make_grompp_sits(gro_file, sits_data, sits_iter=False, iter_index=0):
+    replace(gro_file, "energygrp.*=.*", "energygrp = %d" % sits_data["sits_energrp"])
+    replace(gro_file, "sits-enhance-mode.*=.*", "sits-enhance-mode = %d" % sits_data["sits-enhance-mode"])
+    replace(gro_file, "sits-t-numbers.*=.*", "sits-t-numbers = %d" % sits_data["sits-t-numbers"])
+    replace(gro_file, "nstsitsrecord.*=.*", "nstsitsrecord = %d" % sits_data["nstsitsrecord"])
+    replace(gro_file, "nstsitsupdate.*=.*", "nstsitsupdate = %d" % sits_data["nstsitsupdate"])
+    replace(gro_file, "sits-t-low.*=.*", "sits-t-low = %d" % sits_data["sits-t-low"])
+    replace(gro_file, "sits-t-high.*=.*", "sits-t-high = %d" % sits_data["sits-t-high"])
+    replace(gro_file, "sits-energy-shift.*=.*", "sits-energy-shift = %d" % sits_data["sits-energy-shift"])
+    replace(gro_file, "sits-nk-rest-file.*=.*", "sits-nk-rest-file = %d" % sits_data["sits-nk-rest-file"])
+    replace(gro_file, "sits-norm-rest-file.*=.*", "sits-norm-rest-file = %d" % sits_data["sits-norm-rest-file"])
+    if sits_iter:
+        replace(gro_file, "niter.*=.*", "niter = %d" % sits_data["niter"])
+        replace(gro_file, "sits-constant-nk.*=.*", "sits-constant-nk = no")
+        if iter_index == 0:
+            replace(gro_file, "sits-nk-rest-file.*=.*", ";sits-nk-rest-file = %d" % sits_data["sits-nk-rest-file"])
+            replace(gro_file, "sits-norm-rest-file.*=.*", ";sits-norm-rest-file = %d" % sits_data["sits-norm-rest-file"])
+    else:
+        replace(gro_file, "niter.*=.*", "niter = %d" % 0)
+        replace(gro_file, "sits-constant-nk.*=.*", "sits-constant-nk = yes")
+
+
 def copy_file_list(file_list, from_path, to_path):
     for jj in file_list:
         if os.path.isfile(from_path + jj):
@@ -169,11 +192,11 @@ def make_res(iter_index,
 
     base_path = os.getcwd()
     iter_name = make_iter_name(iter_index)
-    enhc_path = os.path.join(base_path, iter_name, enhc_name)
+    enhc_path = join(base_path, iter_name, enhc_name)
 
-    templ_mol_path = os.path.join(template_dir, mol_name)
-    templ_res_path = os.path.join(template_dir, res_name)
-    res_path = os.path.join(iter_name, res_name)
+    templ_mol_path = join(template_dir, mol_name)
+    templ_res_path = join(template_dir, res_name)
+    res_path = join(iter_name, res_name)
     create_path(res_path)
 
     ret_list = [True for ii in range(numb_walkers)]
@@ -181,8 +204,10 @@ def make_res(iter_index,
     # sel angles
     # check if we have graph in enhc
     for walker_idx in range(numb_walkers):
-        walker_path = os.path.join(enhc_path, walker_format % walker_idx) + "/"
-        graph_files = glob.glob(walker_path + "/*.pb")
+        walker_path = join(enhc_path, walker_format % walker_idx) + "/"
+        os.chdir(walker_path)
+
+        graph_files = glob.glob("*.pb")
         if len(graph_files) != 0:
             os.chdir(walker_path)
             sel_cmd = "python3 test.std.py -m *.pb -t %f -d %s --output sel.out --output-angle sel.angle.out" % (
@@ -194,24 +219,23 @@ def make_res(iter_index,
             os.chdir(base_path)
             sel_idx = []
             sel_angles = np.array([])
-            with open(walker_path + "sel.out") as fp:
+            with open("sel.out") as fp:
                 for line in fp:
                     sel_idx += [int(x) for x in line.split()]
             if len(sel_idx) != 0:
-                sel_angles = np.reshape(np.loadtxt(
-                    walker_path + 'sel.angle.out'), [-1, cv_dim])
+                sel_angles = np.reshape(np.loadtxt('sel.angle.out'), [-1, cv_dim])
             elif len(sel_idx) == 0:
-                np.savetxt(walker_path + 'num_of_cluster.dat', [0], fmt='%d')
-                np.savetxt(walker_path + 'cls.sel.out', [], fmt='%d')
+                np.savetxt('num_of_cluster.dat', [0], fmt='%d')
+                np.savetxt('cls.sel.out', [], fmt='%d')
                 continue
 
         else:
-            sel_idx = range(
-                len(glob.glob(walker_path + enhc_out_conf + "conf*gro")))
-            sel_angles = np.loadtxt(walker_path + enhc_out_angle)
+            conf_files = glob.glob( join(enhc_out_conf, "conf*gro") )
+            sel_idx = range(len(conf_files))
+            sel_angles = np.loadtxt(enhc_out_angle)
             sel_angles = np.reshape(sel_angles, [-1, cv_dim])
-            np.savetxt(walker_path + 'sel.out', sel_idx, fmt='%d')
-            np.savetxt(walker_path + 'sel.angle.out', sel_angles, fmt='%.6f')
+            np.savetxt('sel.out', sel_idx, fmt='%d')
+            np.savetxt('sel.angle.out', sel_angles, fmt='%.6f')
         conf_start = 0
         conf_every = 1
 
@@ -220,32 +244,30 @@ def make_res(iter_index,
         if shell_clustering and len(sel_idx) > 1:
             cmd_sel_from_cluster = (base_path +
                                     "/template/tools/cluster_cv.py -i %s -c %s -t %f --output-idx %s  --output-cv %s"
-                                    % (walker_path + 'sel.out',
-                                        walker_path + 'sel.angle.out',
+                                    % ('sel.out',
+                                       'sel.angle.out',
                                         cluster_threshold,
-                                        walker_path + 'cls.sel.out',
-                                        walker_path + 'cls.sel.angle.out'
+                                       'cls.sel.out',
+                                       'cls.sel.angle.out'
                                        )
                                     )
             sp.check_call(cmd_sel_from_cluster, shell=True)
-            sel_idx = np.loadtxt(walker_path + 'cls.sel.out', dtype=np.int)
+            sel_idx = np.loadtxt('cls.sel.out', dtype=np.int)
         elif shell_clustering == False and len(sel_idx) > 1:
             cls_sel = sel_from_cluster(sel_angles, cluster_threshold)
 ##############################################################################################
-            np.savetxt(walker_path + 'num_of_cluster.dat',
-                       [len(set(cls_sel))], fmt='%d')
+            np.savetxt('num_of_cluster.dat', [len(set(cls_sel))], fmt='%d')
             if len(cls_sel) > max_sel:
                 cls_sel = cls_sel[-max_sel:]
             sel_idx = sel_idx[cls_sel]
-            np.savetxt(walker_path + 'cls.sel.angle.0.out',
-                       sel_angles[cls_sel], fmt='%.6f')
+            np.savetxt('cls.sel.angle.0.out', sel_angles[cls_sel], fmt='%.6f')
         elif len(sel_idx) == 1:
-            np.savetxt(walker_path + 'num_of_cluster.dat', [1], fmt='%d')
-        res_angles = np.loadtxt(walker_path + enhc_out_angle)
+            np.savetxt('num_of_cluster.dat', [1], fmt='%d')
+        res_angles = np.loadtxt(enhc_out_angle)
         res_angles = np.reshape(res_angles, [-1, cv_dim])
         res_angles = res_angles[sel_idx]
-        np.savetxt(walker_path + 'cls.sel.out', sel_idx, fmt='%d')
-        np.savetxt(walker_path + 'cls.sel.angle.out', res_angles, fmt='%.6f')
+        np.savetxt('cls.sel.out', sel_idx, fmt='%d')
+        np.savetxt('cls.sel.angle.out', res_angles, fmt='%.6f')
         res_confs = []
         for ii in sel_idx:
             res_confs.append(walker_path + enhc_out_conf + ("conf%d.gro" % ii))
@@ -305,6 +327,8 @@ def make_res(iter_index,
             make_grompp_res(mol_conf_file, nsteps, frame_freq)
             replace(work_path + res_plm,
                     "STRIDE=[^ ]* ", "STRIDE=%d " % frame_freq)
+        
+        os.chdir(base_path)
 
     if any(ret_list):
         return True
@@ -314,7 +338,8 @@ def make_res(iter_index,
 
 def run_res(iter_index,
             json_file,
-            exec_machine=MachineLocal):
+            exec_machine=MachineLocal,
+            sits=False):
     fp = open(json_file, 'r')
     jdata = json.load(fp)
     gmx_prep = jdata["gmx_prep"]
@@ -379,7 +404,8 @@ def run_res(iter_index,
 
 
 def post_res(iter_index,
-             json_file):
+             json_file,
+             sits=False):
     fp = open(json_file, 'r')
     jdata = json.load(fp)
     res_cmpf_error = jdata["res_cmpf_error"]
@@ -428,6 +454,59 @@ def post_res(iter_index,
              (np.min(norm_force), np.max(norm_force), np.average(norm_force)))
 
 
+def make_train_eff(sits_iter_index, json_file):
+    fp = open(json_file, 'r')
+    jdata = json.load(fp)
+    res_cmpf_error = jdata["res_cmpf_error"]
+
+    sits_iter_name = join("sits", make_iter_name(sits_iter_index))
+
+    for j in range(sits_iter_index):
+        sits_iterj_name = join("sits", make_iter_name(j))
+        sits_rid_iter = np.array([np.loadtxt(join(sits_iterj_name, "rid_iter_begin.dat")),
+                                  np.loadtxt(join(sits_iterj_name, "rid_iter_end.dat"))]).astype(int)
+        for iter_index in range(sits_rid_iter[0], sits_rid_iter[1]):
+            iter_name = make_iter_name(iter_index)
+            res_path = iter_name + "/" + res_name + "/"
+            base_path = os.getcwd() + "/"
+
+            all_task = glob.glob(res_path + "/[0-9]*[0-9]")
+            if len(all_task) == 0:
+                np.savetxt(res_path + 'data.raw', [], fmt="%.6e")
+                return
+            all_task.sort()
+            cmpf_cmd = "./cmpf_wtij.py -i %s -j %s" % (sits_iter_name, sits_iterj_name)
+            cmpf_log = "cmpf.log"
+            cmpf_cmd = cmd_append_log(cmpf_cmd, cmpf_log)
+
+            centers = []
+            force = []
+            ndim = 0
+
+            # run_node_tasks(max_thread, 1, all_task, cmpf_cmd)
+            exec_hosts(MachineLocal, cmpf_cmd, 1, all_task, None)
+
+            for work_path in all_task:
+                os.chdir(work_path)
+                this_centers = np.loadtxt('centers.out')
+                centers = np.append(centers, this_centers)
+                this_force = np.loadtxt('force.out')
+                force = np.append(force, this_force)
+                ndim = this_force.size
+                assert (
+                        ndim == this_centers.size), "center size is diff to force size in " + work_path
+                os.chdir(base_path)
+
+            centers = np.reshape(centers, [-1, ndim])
+            force = np.reshape(force, [-1, ndim])
+            data = np.concatenate((centers, force), axis=1)
+            np.savetxt(res_path + 'data.raw', data, fmt="%.6e")
+
+            norm_force = np.linalg.norm(force, axis=1)
+            log_task("min|f| = %e  max|f| = %e  avg|f| = %e" %
+                     (np.min(norm_force), np.max(norm_force), np.average(norm_force)))
+
+
 def clean_res(iter_index):
     iter_name = make_iter_name(iter_index)
     res_path = iter_name + "/" + res_name + "/"
@@ -446,7 +525,9 @@ def clean_res(iter_index):
 
 
 def make_train(iter_index,
-               json_file):
+               json_file,
+               data_dir="data",
+               data_name="data"):
     fp = open(json_file, 'r')
     jdata = json.load(fp)
     template_dir = jdata["template_dir"]
@@ -454,13 +535,15 @@ def make_train(iter_index,
     res_iter = jdata["res_iter"]
 
     iter_name = make_iter_name(iter_index)
-    train_path = iter_name + "/" + train_name + "/"
-    data_path = train_path + "data/"
-    data_file = train_path + "data/data.raw"
-    data_old_file = train_path + "data/data.old.raw"
-    data_new_file = train_path + "data/data.new.raw"
+
+    train_path    = join(iter_name, train_name)
+    data_path     = join(train_path, data_dir)
+
+    data_file     = join(data_path, data_name + ".raw")
+    data_old_file = join(data_path, data_name + ".old.raw")
+    data_new_file = join(data_path, data_name + ".new.raw")
     base_path = os.getcwd() + "/"
-    templ_train_path = template_dir + "/" + train_name + "/"
+    templ_train_path = join(template_dir, train_name)
 
     create_path(train_path)
     os.makedirs(data_path)
@@ -470,21 +553,16 @@ def make_train(iter_index,
     log_task("collect data upto %d" % (iter_index))
     if iter_index == 0:
         ii = 0
-        this_raw = base_path + \
-            make_iter_name(ii) + "/" + res_name + "/data.raw"
+        this_raw = join(base_path, make_iter_name(ii), res_name, data_name + ".raw")
         os.chdir(data_path)
         os.symlink(os.path.relpath(this_raw), os.path.basename(data_new_file))
-        os.symlink(os.path.basename(data_new_file),
-                   os.path.basename(data_file))
+        os.symlink(os.path.basename(data_new_file), os.path.basename(data_file))
         os.chdir(base_path)
         open(data_old_file, "w").close()
     else:
         prev_iter_index = iter_index - 1
-        prev_data_file = base_path + \
-            make_iter_name(prev_iter_index) + "/" + \
-            train_name + "/data/data.raw"
-        this_raw = base_path + \
-            make_iter_name(iter_index) + "/" + res_name + "/data.raw"
+        prev_data_file = join(base_path, make_iter_name(prev_iter_index), train_name, data_dir, data_name + ".raw")
+        this_raw = join(base_path, make_iter_name(iter_index), res_name, data_name + ".raw")
         os.chdir(data_path)
         os.symlink(os.path.relpath(prev_data_file),
                    os.path.basename(data_old_file))
@@ -498,8 +576,9 @@ def make_train(iter_index,
     # create train dirs
     log_task("create train dirs")
     for ii in range(numb_model):
-        work_path = train_path + ("%03d/" % ii)
-        old_model_path = work_path + "old_model/"
+        work_path = join(train_path, ("%03d" % ii))
+        old_model_path = join(work_path, "old_model")
+
         create_path(work_path)
         os.chdir(work_path)
         os.symlink("../data", "./data")
@@ -510,9 +589,8 @@ def make_train(iter_index,
             prev_train_path = prev_iter_name + "/" + train_name + "/"
             prev_train_path = os.path.abspath(prev_train_path) + "/"
             prev_work_path = prev_train_path + ("%03d/" % ii)
-            prev_model_files = glob.glob(prev_work_path + "model.ckpt.*")
-            prev_model_files = prev_model_files + \
-                [prev_work_path + "checkpoint"]
+            prev_model_files = glob.glob( join(prev_work_path, "model.ckpt.*") ) + [join(prev_work_path, "checkpoint")]
+            # prev_model_files += [join(prev_work_path, "checkpoint")]
             create_path(old_model_path)
             os.chdir(old_model_path)
             for ii in prev_model_files:
@@ -525,7 +603,9 @@ def make_train(iter_index,
 
 def run_train(iter_index,
               json_file,
-              exec_machine=MachineLocal):
+              exec_machine=MachineLocal,
+              data_dir="data",
+              data_name="data"):
     fp = open(json_file, 'r')
     jdata = json.load(fp)
     numb_model = jdata["numb_model"]
@@ -533,19 +613,18 @@ def run_train(iter_index,
     res_iter = jdata["res_iter"]
 
     iter_name = make_iter_name(iter_index)
-    train_path = iter_name + "/" + train_name + "/"
+    train_path = join(iter_name, train_name)
     base_path = os.getcwd() + "/"
 
     # check if new data is empty
-    new_data_file = os.path.join(train_path, 'data/data.new.raw')
+    new_data_file = os.path.join(train_path, data_dir, data_name + '.new.raw')
     if os.stat(new_data_file).st_size == 0:
         prev_iter_index = iter_index - 1
-        prev_train_path = base_path + \
-            make_iter_name(prev_iter_index) + "/" + train_name + "/"
-        prev_models = glob.glob(prev_train_path + "*.pb")
+        prev_train_path = join(base_path, make_iter_name(prev_iter_index), train_name) + "/"
+        prev_models = glob.glob( join(prev_train_path, "*.pb") )
         for ii in prev_models:
             model_name = os.path.basename(ii)
-            os.symlink(ii, os.path.join(train_path, model_name))
+            os.symlink(ii, join(train_path, model_name))
         return
 
     neurons = jdata["neurons"]
@@ -606,7 +685,7 @@ def run_train(iter_index,
 
 def clean_train(iter_index):
     iter_name = make_iter_name(iter_index)
-    train_path = iter_name + "/" + train_name + "/"
+    train_path = join(iter_name, train_name)
     base_path = os.getcwd() + "/"
 
     all_task = glob.glob(train_path + "/[0-9]*[0-9]")

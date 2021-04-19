@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import os
+from os.path import join
 import re
 import shutil
 import json
@@ -25,19 +26,15 @@ from lib.modeling import record_iter
 from lib.modeling import log_iter
 from lib.modeling import log_task
 from lib.modeling import replace
-from lib.modeling import make_grompp_enhc
+from lib.modeling import make_grompp_enhc, make_grompp_sits
 from lib.modeling import copy_file_list
 from lib.modeling import create_path
 from lib.modeling import cmd_append_log
 from lib.modeling import clean_files
 # tasks
-from lib.modeling import make_res
-from lib.modeling import run_res
-from lib.modeling import post_res
-from lib.modeling import clean_res
-from lib.modeling import make_train
-from lib.modeling import run_train
-from lib.modeling import clean_train
+from lib.modeling import make_res, run_res, post_res, clean_res
+from lib.modeling import make_train, run_train, clean_train
+from lib.modeling import make_train_eff
 # machine
 import lib.MachineLocal as MachineLocal
 import lib.MachineSlurm as MachineSlurm
@@ -57,19 +54,30 @@ enhc_out_plm = "plm.out"
 
 def make_enhc(iter_index,
               json_file,
-              graph_files):
+              graph_files,
+              sits_iter=False):
     graph_files.sort()
     fp = open(json_file, 'r')
     jdata = json.load(fp)
-    numb_walkers = jdata["numb_walkers"]
+    sits_param = jdata.get("sits_settings", None)
+    
+    numb_walkers = jdata["numb_walkers"] if not sits_iter else 1
     template_dir = jdata["template_dir"]
     enhc_trust_lvl_1 = jdata["bias_trust_lvl_1"]
     enhc_trust_lvl_2 = jdata["bias_trust_lvl_2"]
+
     nsteps = jdata["bias_nsteps"]
+    if sits_param is not None:
+        if sits_iter:
+            nsteps = sits_param["sits_nsteps"]
     frame_freq = jdata["bias_frame_freq"]
     num_of_cluster_threshhold = jdata["num_of_cluster_threshhold"]
 
     iter_name = make_iter_name(iter_index)
+    if sits_param is not None:
+        if sits_iter:
+            iter_name = join("sits", make_iter_name(iter_index))
+            work_path = iter_name + "/"
     work_path = iter_name + "/" + enhc_name + "/"
     mol_path = template_dir + "/" + mol_name + "/"
     enhc_path = template_dir + "/" + enhc_name + "/"
@@ -137,6 +145,13 @@ def make_enhc(iter_index,
             os.symlink(abs_path, walker_path + file_name)
         # config MD
         mol_conf_file = walker_path + "grompp.mdp"
+        if sits_param is not None:
+            if sits_iter:
+                mol_conf_file = walker_path + "grompp_sits_iter.mdp"
+            else:
+                mol_conf_file = walker_path + "grompp_sits.mdp"
+            make_grompp_sits(mol_conf_file, sits_param, sits_iter=sits_iter, iter_index=iter_index)
+
         make_grompp_enhc(mol_conf_file, nsteps, frame_freq)
         # config plumed
         graph_list = ""
@@ -170,12 +185,18 @@ def make_enhc(iter_index,
 
 
 def run_enhc(iter_index,
-             json_file):
-    iter_name = make_iter_name(iter_index)
-    work_path = iter_name + "/" + enhc_name + "/"
-
+             json_file,
+             sits_iter=False):
     fp = open(json_file, 'r')
     jdata = json.load(fp)
+    sits_param = jdata.get("sits_settings", None)
+
+    iter_name = make_iter_name(iter_index)
+    if sits_param is not None:
+        if sits_iter:
+            iter_name = join("sits", make_iter_name(iter_index))
+    work_path = iter_name + "/" + enhc_name + "/"
+
     gmx_prep = jdata["gmx_prep"]
     gmx_run = jdata["gmx_run"]
     enhc_thread = jdata["bias_thread"]
@@ -190,7 +211,7 @@ def run_enhc(iter_index,
         gmx_run = gmx_run + " -plumed " + enhc_bf_plm
     gmx_prep_cmd = cmd_append_log(gmx_prep, gmx_prep_log)
     gmx_run_cmd = cmd_append_log(gmx_run, gmx_run_log)
-    numb_walkers = jdata["numb_walkers"]
+    numb_walkers = jdata["numb_walkers"] if not sits_iter else 1
     batch_jobs = jdata['batch_jobs']
     batch_time_limit = jdata['batch_time_limit']
     batch_modules = jdata['batch_modules']
@@ -287,12 +308,48 @@ def clean_enhc_confs(iter_index):
                 os.remove(jj)
         os.chdir(cwd)
 
+def make_sits_iter(sits_iter_index, json_file, graph_files):
+    make_enhc(sits_iter_index, json_file, graph_files, sits_iter=True)
+    if sits_iter_index > 0:
+        old_dir = join("sits", make_iter_name(sits_iter_index-1))
+        walker_dir = join("sits", make_iter_name(sits_iter_index), enhc_name, make_walker_name(0))
+        shutil.copyfile( join(old_dir, "log_nk.dat"), join(walker_dir, "log_nk.dat") )
+        shutil.copyfile( join(old_dir, "log_norm.dat"), join(walker_dir, "log_norm.dat") )
+
+
+def run_sits_iter(sits_iter_index, json_file):
+    run_enhc(sits_iter_index, json_file, sits_iter=True)
+
+def post_sits_iter(sits_iter_index, json_file):
+    sits_dir = join("sits", make_iter_name(sits_iter_index))
+    walker_dir = join(sits_dir, enhc_name, make_walker_name(0))
+    cmd_save_sits = ""
+    cmd_save_sits += "tail -n 1 %s > %s\n" % (join(walker_dir, "sits_nk.dat"), join(sits_dir, "log_nk.dat"))
+    cmd_save_sits += "tail -n 1 %s > %s\n" % (join(walker_dir, "sits_norm.dat"), join(sits_dir, "log_norm.dat"))
+    sp.check_call(cmd_save_sits, shell=True)
+
+    fp = open(json_file, 'r')
+    jdata = json.load(fp)
+    sits_param = jdata.get("sits_settings", None)
+    tempf = np.linspace(sits_param["sits-t-low"], sits_param["sits-t-high"], sits_param["sits-t-numbers"])
+
+    CONSTANT_kB = 0.008314472
+    beta_k = 1.0 / (CONSTANT_kB * tempf)
+    beta_0 = 1.0 / (CONSTANT_kB * sits_param["sits-t-ref"])
+    np.savetxt(beta_k, join(sits_dir, "beta_k.dat"))
+    np.savetxt(np.array([beta_0]), join("sits", "beta_0.dat"))
+
+
+def run_train_eff(sits_iter_index, json_file):
+    pass
 
 def run_iter(json_file, init_model):
     prev_model = init_model
     fp = open(json_file, 'r')
     jdata = json.load(fp)
+    sits_param = jdata.get("sits_settings", None)
     numb_iter = jdata["numb_iter"]
+    niter_per_sits = sits_param.get("niter_per_sits", 100000000)
     numb_task = 8
     record = "record.rid"
     cleanup = jdata["cleanup"]
@@ -310,6 +367,20 @@ def run_iter(json_file, init_model):
     for ii in range(numb_iter):
         if ii > 0:
             prev_model = glob.glob(make_iter_name(ii-1) + "/" + train_name + "/*pb")
+        if ii % niter_per_sits == 0:
+            kk = ii / niter_per_sits
+            log_iter("run_sits_iter", kk, 0)
+            if kk > 0:
+                open(join("sits", make_iter_name(kk-1), "rid_iter_end.dat"), "w+").write("%d" % ii)
+            open(join("sits", make_iter_name(kk), "rid_iter_begin.dat"), "w+").write("%d" % ii)
+
+            make_sits_iter(kk, json_file, prev_model)
+            run_sits_iter(kk, json_file)
+            post_sits_iter(kk, json_file)
+            if kk > 0:
+                make_train_eff(kk, json_file)
+                run_train_eff(kk, json_file, exec_machine)
+        
         for jj in range(numb_task):
             if ii * max_tasks + jj <= iter_rec[0] * max_tasks + iter_rec[1]:
                 continue

@@ -38,25 +38,25 @@ for ii in range(1, nframes):
 
 start_f = int(nframes*(1-tail))
 avgins = np.average(data[start_f:, :], axis=0)
-weighted_avgins = np.average(
+avgins_wt = np.average(
     data[start_f:, :] * weights[start_f:, None]) / np.sum(weights)
 
 diff = np.zeros(avgins.shape)
-weighted_diff = np.zeros(weighted_avgins.shape)
+diff_wt = np.zeros(avgins_wt.shape)
 for ii in range(len(avgins)):
     diff[ii] = avgins[ii] - cc[ii]
-    weighted_diff[ii] = weighted_avgins[ii] - cc[ii]
+    diff_wt[ii] = avgins_wt[ii] - cc[ii]
     if (ii < ndih_values):
         if diff[ii] >= np.pi:
             diff[ii] -= np.pi * 2.
         elif diff[ii] < -np.pi:
             diff[ii] += np.pi * 2.
-        if weighted_diff[ii] >= np.pi:
-            weighted_diff[ii] -= np.pi * 2.
-        elif weighted_diff[ii] < -np.pi:
-            weighted_diff[ii] += np.pi * 2.
+        if diff_wt[ii] >= np.pi:
+            diff_wt[ii] -= np.pi * 2.
+        elif diff_wt[ii] < -np.pi:
+            diff_wt[ii] += np.pi * 2.
 
 ff = np.multiply(kk, diff)
-ff_weighted = np.multiply(kk, weighted_diff)
-np.savetxt('force.out',  np.reshape(ff, [1, -1]), fmt='%.10e')
-np.savetxt('force_ori.out',  np.reshape(ff_weighted, [1, -1]), fmt='%.10e')
+ff_wt = np.multiply(kk, diff_wt)
+np.savetxt('force_000.out',  np.reshape(ff, [1, -1]), fmt='%.10e')
+np.savetxt('force.out',  np.reshape(ff_wt, [1, -1]), fmt='%.10e')
